@@ -43,7 +43,6 @@ def get_user_policies(client, username, bucket):
 
     filtered = []
     for policy_name in itertools.chain(inline, attached):
-        print(policy_name)
         res = client.get_user_policy(UserName=username, PolicyName=policy_name)
         for statement in res['PolicyDocument']['Statement']:
             parts = statement['Resource'].split(':')
