@@ -15,8 +15,15 @@ attrs==25.3.0
     #   referencing
 authlib==1.6.3
     # via fastmcp
+boto3==1.40.30
+    # via team-mcp-server (pyproject.toml)
+botocore==1.40.30
+    # via
+    #   boto3
+    #   s3transfer
 certifi==2025.8.3
     # via
+    #   clickhouse-connect
     #   httpcore
     #   httpx
     #   requests
@@ -26,6 +33,8 @@ charset-normalizer==3.4.3
     # via requests
 click==8.2.1
     # via uvicorn
+clickhouse-connect==0.8.18
+    # via team-mcp-server (pyproject.toml)
 cryptography==45.0.7
     # via authlib
 cyclopts==3.24.0
@@ -63,6 +72,10 @@ idna==3.10
     #   requests
 isodate==0.7.2
     # via openapi-core
+jmespath==1.0.1
+    # via
+    #   boto3
+    #   botocore
 jsonschema==4.25.1
     # via
     #   mcp
@@ -79,6 +92,8 @@ jsonschema-specifications==2025.9.1
     #   openapi-schema-validator
 lazy-object-proxy==1.12.0
     # via openapi-spec-validator
+lz4==4.4.4
+    # via clickhouse-connect
 markdown-it-py==4.0.0
     # via rich
 markupsafe==3.0.2
@@ -121,6 +136,8 @@ pyngrok==7.3.0
     # via team-mcp-server (pyproject.toml)
 pyperclip==1.9.0
     # via fastmcp
+python-dateutil==2.9.0.post0
+    # via botocore
 python-dotenv==1.1.1
     # via
     #   team-mcp-server (pyproject.toml)
@@ -128,6 +145,8 @@ python-dotenv==1.1.1
     #   pydantic-settings
 python-multipart==0.0.20
     # via mcp
+pytz==2025.2
+    # via clickhouse-connect
 pyyaml==6.0.2
     # via
     #   jsonschema-path
@@ -152,8 +171,12 @@ rpds-py==0.27.1
     # via
     #   jsonschema
     #   referencing
+s3transfer==0.14.0
+    # via boto3
 six==1.17.0
-    # via rfc3339-validator
+    # via
+    #   python-dateutil
+    #   rfc3339-validator
 sniffio==1.3.1
     # via anyio
 sse-starlette==3.0.2
@@ -171,10 +194,15 @@ typing-inspection==0.4.1
     #   pydantic
     #   pydantic-settings
 urllib3==2.5.0
-    # via requests
+    # via
+    #   botocore
+    #   clickhouse-connect
+    #   requests
 uvicorn==0.35.0
     # via
     #   team-mcp-server (pyproject.toml)
     #   mcp
 werkzeug==3.1.1
     # via openapi-core
+zstandard==0.24.0
+    # via clickhouse-connect
