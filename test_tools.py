@@ -8,7 +8,7 @@ import asyncio
 sys.path.insert(0, 'src')
 
 # Import the mcp instance
-from team_server import mcp, CLICKHOUSE_AVAILABLE
+from server import mcp, CLICKHOUSE_AVAILABLE
 
 async def main():
     print("=" * 50)

@@ -32,7 +32,7 @@ def main():
     server_process = None
     
     if not args.tunnel_only:
-        server_script = Path(__file__).parent.parent / "src" / "team_server.py"
+        server_script = Path(__file__).parent.parent / "src" / "server.py"
         print(f"Starting MCP server on port {server_port}...")
         server_process = subprocess.Popen(
             [sys.executable, str(server_script)],

@@ -1,12 +1,12 @@
 [project]
-name = "team-mcp-server"
+name = "s3-butler"
 version = "0.1.0"
-description = "MCP server that provides team information"
+description = "MCP server for S3 bucket management and analytics"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
-    {name = "Team1", email = "team1@example.com"},
+    {name = "S3 Butler Team", email = "s3butler@example.com"},
 ]
 dependencies = [
     "fastmcp>=2.3.0",
