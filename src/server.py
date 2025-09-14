@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Team MCP Server - Provides team information via MCP protocol
+S3 Butler - MCP server for S3 bucket management and analytics
 """
 
 from fastmcp import FastMCP
@@ -31,17 +31,20 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger("TeamServer")
+logger = logging.getLogger("S3Butler")
 
-mcp = FastMCP("TeamServer")
+mcp = FastMCP("S3Butler")
 
 
 @mcp.tool()
 def get_team_name() -> str:
-    """Get the name of the team
+    """Get the name of the team or organization
+    
+    This tool returns the team or organization name associated with this S3 Butler instance.
+    Currently returns a hardcoded value but can be configured to return dynamic team information.
     
     Returns:
-        str: The team name
+        str: The team/organization name (default: 'team1')
     """
     return "team1"
 
@@ -51,6 +54,7 @@ def get_team_name() -> str:
 s3_access_key = os.getenv('S3_ACCESS_KEY')
 s3_secret_key = os.getenv('S3_SECRET_KEY')
 iam_endpoint = os.getenv('IAM_ENDPOINT', 'http://127.0.0.1:8600')
+s3_endpoint = os.getenv('S3_ENDPOINT', 'http://127.0.0.1:8000')
 
 if s3_access_key and s3_secret_key:
     session = boto3.Session(
@@ -58,21 +62,30 @@ if s3_access_key and s3_secret_key:
         aws_secret_access_key=s3_secret_key
     )
     iam_client = session.client('iam', endpoint_url=iam_endpoint)
+    s3_client = session.client('s3', endpoint_url=s3_endpoint)
 else:
     # Fallback to profile if env vars not set
     session = boto3.Session(profile_name='scality-dev')
     iam_client = session.client('iam', endpoint_url=iam_endpoint)
+    s3_client = session.client('s3', endpoint_url=s3_endpoint)
 
 # Create a wrapper function that FastMCP can use
 @mcp.tool()
 def get_iam_policies_for_bucket(bucket_name: str = "") -> str:
-    """Retrieve all IAM policies for an account that reference a given bucket
+    """Retrieve all IAM policies that grant access to a specific S3 bucket
+    
+    This tool scans all IAM users in your account and identifies which policies
+    (both inline and attached) grant permissions to the specified S3 bucket.
+    Useful for auditing bucket access and understanding permission boundaries.
 
     Args:
-        bucket_name: The name of the S3 bucket to check policies for.
+        bucket_name: The name of the S3 bucket to check policies for (e.g., 'my-data-bucket').
+                    Required parameter - must provide a valid bucket name.
 
     Returns:
-        JSON string containing IAM policies that reference the bucket
+        JSON string containing a dictionary where keys are usernames and values are
+        their policies that reference the bucket. Returns error message if bucket name
+        is not provided.
     """
     if not bucket_name or bucket_name.strip() == "":
         return json.dumps({
@@ -82,6 +95,47 @@ def get_iam_policies_for_bucket(bucket_name: str = "") -> str:
         })
 
     return s3.get_iam_policies_for_bucket(iam_client, bucket_name)
+
+@mcp.tool()
+def list_buckets() -> str:
+    """List all S3 buckets accessible with the configured credentials
+    
+    This tool retrieves all S3 buckets that the configured AWS credentials have
+    permission to list. Provides bucket names, creation dates, and owner information.
+    Useful for discovering available storage resources and auditing bucket inventory.
+    
+    Returns:
+        JSON string containing:
+        - 'buckets': List of bucket objects with 'name' and 'creation_date'
+        - 'count': Total number of buckets found
+        - 'owner': Bucket owner information (DisplayName and ID)
+        Returns error message if S3 access fails.
+    """
+    try:
+        response = s3_client.list_buckets()
+        
+        buckets = []
+        for bucket in response.get('Buckets', []):
+            buckets.append({
+                'name': bucket['Name'],
+                'creation_date': bucket['CreationDate'].isoformat() if bucket.get('CreationDate') else None
+            })
+        
+        result = {
+            'buckets': buckets,
+            'count': len(buckets),
+            'owner': response.get('Owner', {})
+        }
+        
+        logger.info(f"Listed {len(buckets)} buckets")
+        return json.dumps(result, indent=2)
+        
+    except Exception as e:
+        logger.error(f"Error listing buckets: {e}")
+        return json.dumps({
+            "error": "Failed to list buckets",
+            "message": str(e)
+        })
 
 # ClickHouse Tools - only registered if ClickHouse is configured
 if CLICKHOUSE_AVAILABLE:
@@ -113,38 +167,54 @@ if CLICKHOUSE_AVAILABLE:
         start_time: Optional[str] = None,
         end_time: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Get the top N buckets by number of operations
+        """Get the top N buckets ranked by total number of operations
+        
+        This analytics tool queries ClickHouse to identify which S3 buckets have the most
+        activity based on total operation count. Useful for identifying hot buckets,
+        understanding usage patterns, and capacity planning.
+        
+        Time range defaults to last 10 days if not specified. End time always defaults to
+        current time if not provided.
         
         Args:
-            limit: Number of top buckets to return (default: 10)
-            hours_back: Number of hours to look back from now (optional)
-            start_time: Start time in ISO format (optional)
-            end_time: End time in ISO format (optional)
+            limit: Number of top buckets to return (default: 10, max recommended: 100)
+            hours_back: Number of hours to look back from now (e.g., 24 for last day)
+                       Mutually exclusive with start_time/end_time
+            start_time: Start time in ISO format (e.g., '2024-01-01T00:00:00Z')
+                       If provided without end_time, end_time defaults to now
+            end_time: End time in ISO format (e.g., '2024-01-31T23:59:59Z')
+                     Optional, defaults to current time
             
         Returns:
-            List[Dict[str, Any]]: List of buckets with their operation counts
+            List[Dict[str, Any]]: List of dictionaries, each containing:
+            - 'bucket_name': Name of the S3 bucket
+            - 'number_of_operations': Total operation count in the time period
+            Sorted by operation count (descending)
         """
         logger.info(f"Getting top {limit} buckets by operations")
         
-        # Build time filter
+        # Build time filter with defaults
         time_conditions = []
         
         if hours_back:
             time_conditions.append(
                 f"timestamp >= now() - INTERVAL {hours_back} HOUR"
             )
+            time_conditions.append("timestamp <= now()")
         elif start_time or end_time:
             if start_time:
                 time_conditions.append(f"timestamp >= '{start_time}'")
             if end_time:
                 time_conditions.append(f"timestamp <= '{end_time}'")
+            else:
+                time_conditions.append("timestamp <= now()")
+        else:
+            # Default to last 10 days
+            time_conditions.append("timestamp >= now() - INTERVAL 10 DAY")
+            time_conditions.append("timestamp <= now()")
         
         # Build the query based on the Grafana template for operations
-        where_clause = ""
-        if time_conditions:
-            where_clause = "WHERE " + " AND ".join(time_conditions) + " AND "
-        else:
-            where_clause = "WHERE "
+        where_clause = "WHERE " + " AND ".join(time_conditions) + " AND "
         
         query = f"""
         SELECT 
@@ -185,38 +255,55 @@ if CLICKHOUSE_AVAILABLE:
         start_time: Optional[str] = None,
         end_time: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Get the top N buckets by inbound traffic (PutObject and UploadPart operations)
+        """Get the top N buckets ranked by inbound traffic (data uploaded)
+        
+        This analytics tool queries ClickHouse to identify which S3 buckets receive the most
+        data uploads, tracking PutObject and UploadPart operations. Useful for understanding
+        data ingestion patterns, identifying heavy write workloads, and storage growth trends.
+        
+        Time range defaults to last 10 days if not specified. End time always defaults to
+        current time if not provided.
         
         Args:
-            limit: Number of top buckets to return (default: 10)
-            hours_back: Number of hours to look back from now (optional)
-            start_time: Start time in ISO format (optional)
-            end_time: End time in ISO format (optional)
+            limit: Number of top buckets to return (default: 10, max recommended: 100)
+            hours_back: Number of hours to look back from now (e.g., 24 for last day)
+                       Mutually exclusive with start_time/end_time
+            start_time: Start time in ISO format (e.g., '2024-01-01T00:00:00Z')
+                       If provided without end_time, end_time defaults to now
+            end_time: End time in ISO format (e.g., '2024-01-31T23:59:59Z')
+                     Optional, defaults to current time
             
         Returns:
-            List[Dict[str, Any]]: List of buckets with their inbound traffic
+            List[Dict[str, Any]]: List of dictionaries, each containing:
+            - 'bucket_name': Name of the S3 bucket
+            - 'total_bytes': Total bytes uploaded (raw number)
+            - 'inbound_traffic': Human-readable size (e.g., '1.5 GB', '500 MB')
+            Sorted by total bytes uploaded (descending)
         """
         logger.info(f"Getting top {limit} buckets by inbound traffic")
         
-        # Build time filter
+        # Build time filter with defaults
         time_conditions = []
         
         if hours_back:
             time_conditions.append(
                 f"timestamp >= now() - INTERVAL {hours_back} HOUR"
             )
+            time_conditions.append("timestamp <= now()")
         elif start_time or end_time:
             if start_time:
                 time_conditions.append(f"timestamp >= '{start_time}'")
             if end_time:
                 time_conditions.append(f"timestamp <= '{end_time}'")
+            else:
+                time_conditions.append("timestamp <= now()")
+        else:
+            # Default to last 10 days
+            time_conditions.append("timestamp >= now() - INTERVAL 10 DAY")
+            time_conditions.append("timestamp <= now()")
         
         # Build the query based on the Grafana template for inbound traffic
-        where_clause = ""
-        if time_conditions:
-            where_clause = "WHERE " + " AND ".join(time_conditions) + " AND "
-        else:
-            where_clause = "WHERE "
+        where_clause = "WHERE " + " AND ".join(time_conditions) + " AND "
         
         query = f"""
         SELECT 
@@ -259,38 +346,55 @@ if CLICKHOUSE_AVAILABLE:
         start_time: Optional[str] = None,
         end_time: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Get the top N buckets by outbound traffic (GetObject operations)
+        """Get the top N buckets ranked by outbound traffic (data downloaded)
+        
+        This analytics tool queries ClickHouse to identify which S3 buckets serve the most
+        data downloads, tracking GetObject operations. Useful for understanding data
+        consumption patterns, identifying high-demand content, and optimizing CDN strategies.
+        
+        Time range defaults to last 10 days if not specified. End time always defaults to
+        current time if not provided.
         
         Args:
-            limit: Number of top buckets to return (default: 10)
-            hours_back: Number of hours to look back from now (optional)
-            start_time: Start time in ISO format (optional)
-            end_time: End time in ISO format (optional)
+            limit: Number of top buckets to return (default: 10, max recommended: 100)
+            hours_back: Number of hours to look back from now (e.g., 24 for last day)
+                       Mutually exclusive with start_time/end_time
+            start_time: Start time in ISO format (e.g., '2024-01-01T00:00:00Z')
+                       If provided without end_time, end_time defaults to now
+            end_time: End time in ISO format (e.g., '2024-01-31T23:59:59Z')
+                     Optional, defaults to current time
             
         Returns:
-            List[Dict[str, Any]]: List of buckets with their outbound traffic
+            List[Dict[str, Any]]: List of dictionaries, each containing:
+            - 'bucket_name': Name of the S3 bucket
+            - 'total_bytes': Total bytes downloaded (raw number)
+            - 'outbound_traffic': Human-readable size (e.g., '10.5 TB', '750 GB')
+            Sorted by total bytes downloaded (descending)
         """
         logger.info(f"Getting top {limit} buckets by outbound traffic")
         
-        # Build time filter
+        # Build time filter with defaults
         time_conditions = []
         
         if hours_back:
             time_conditions.append(
                 f"timestamp >= now() - INTERVAL {hours_back} HOUR"
             )
+            time_conditions.append("timestamp <= now()")
         elif start_time or end_time:
             if start_time:
                 time_conditions.append(f"timestamp >= '{start_time}'")
             if end_time:
                 time_conditions.append(f"timestamp <= '{end_time}'")
+            else:
+                time_conditions.append("timestamp <= now()")
+        else:
+            # Default to last 10 days
+            time_conditions.append("timestamp >= now() - INTERVAL 10 DAY")
+            time_conditions.append("timestamp <= now()")
         
         # Build the query based on the Grafana template for outbound traffic
-        where_clause = ""
-        if time_conditions:
-            where_clause = "WHERE " + " AND ".join(time_conditions) + " AND "
-        else:
-            where_clause = "WHERE "
+        where_clause = "WHERE " + " AND ".join(time_conditions) + " AND "
         
         query = f"""
         SELECT 
@@ -336,7 +440,7 @@ if __name__ == "__main__":
     port = int(os.getenv("MCP_PORT", "8000"))
     path = os.getenv("MCP_PATH", "/mcp")
 
-    print(f"Starting TeamServer MCP server...")
+    print(f"Starting S3 Butler MCP server...")
     print(f"Server will be available at http://{host}:{port}{path}")
     print(f"Using HTTP streaming transport (FastMCP 2.3+)")
 
