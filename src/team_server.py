@@ -47,10 +47,41 @@ def get_team_name() -> str:
 
 
 # S3/IAM Tools
-session = boto3.Session(profile_name='scality-dev')
-iam_client = session.client('iam', endpoint_url="http://127.0.0.1:8600")
+# Use environment variables for S3/IAM configuration
+s3_access_key = os.getenv('S3_ACCESS_KEY')
+s3_secret_key = os.getenv('S3_SECRET_KEY')
+iam_endpoint = os.getenv('IAM_ENDPOINT', 'http://127.0.0.1:8600')
 
-mcp.tool(s3.with_client(iam_client)(s3.get_iam_policies_for_bucket))
+if s3_access_key and s3_secret_key:
+    session = boto3.Session(
+        aws_access_key_id=s3_access_key,
+        aws_secret_access_key=s3_secret_key
+    )
+    iam_client = session.client('iam', endpoint_url=iam_endpoint)
+else:
+    # Fallback to profile if env vars not set
+    session = boto3.Session(profile_name='scality-dev')
+    iam_client = session.client('iam', endpoint_url=iam_endpoint)
+
+# Create a wrapper function that FastMCP can use
+@mcp.tool()
+def get_iam_policies_for_bucket(bucket_name: str = "") -> str:
+    """Retrieve all IAM policies for an account that reference a given bucket
+
+    Args:
+        bucket_name: The name of the S3 bucket to check policies for.
+
+    Returns:
+        JSON string containing IAM policies that reference the bucket
+    """
+    if not bucket_name or bucket_name.strip() == "":
+        return json.dumps({
+            "error": "Bucket name is required",
+            "message": "Please provide a bucket name to check which IAM policies grant access to it.",
+            "usage": "Specify a bucket name (e.g., 'finance', 'engineering')"
+        })
+
+    return s3.get_iam_policies_for_bucket(iam_client, bucket_name)
 
 # ClickHouse Tools - only registered if ClickHouse is configured
 if CLICKHOUSE_AVAILABLE:
